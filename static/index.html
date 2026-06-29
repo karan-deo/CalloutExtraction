@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF Annotation UI</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="title-block">
+      <h1>PDF Annotation</h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="header-actions">
+      <span id="dirty-flag" class="dirty-flag" hidden>Unsaved changes</span>
+      <button id="save-btn" type="button" class="primary">Save</button>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <label class="picker">
+      <span>PDF</span>
+      <select id="pdf-select"></select>
+      <button id="rescan-btn" type="button" title="Re-scan pdfs/ for new PDFs">Rescan</button>
+    </label>
+    <div class="page-nav">
+      <button id="prev-page" type="button" title="Previous page">&larr;</button>
+      <select id="page-select"></select>
+      <button id="next-page" type="button" title="Next page">&rarr;</button>
+    </div>
+
+    <div class="tools" id="tools">
+      <button class="tool" data-tool="select" title="Select / move (V)">Select</button>
+      <button class="tool" data-tool="create" title="Draw rectangle (R)">Create</button>
+      <button class="tool" data-tool="delete" title="Delete (D / Del)">Delete</button>
+      <button class="tool" data-tool="copy" title="Duplicate selected (C)">Copy</button>
+    </div>
+
+    <div class="zoom-controls">
+      <button id="zoom-out" type="button" title="Zoom out">&minus;</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-in" type="button" title="Zoom in">+</button>
+      <button id="zoom-reset" type="button" title="Reset zoom">Reset</button>
+    </div>
+  </div>
+
+  <main>
+    <section class="canvas-wrap">
+      <div class="viewport" id="viewport">
+        <div class="zoom-content" id="zoom-content"></div>
+      </div>
+      <div class="hint" id="hint"></div>
+    </section>
+
+    <aside class="side">
+      <section class="panel">
+        <h2>Layers</h2>
+        <div class="layer-add">
+          <input id="layer-name-input" type="text" placeholder="New layer name" />
+          <button id="add-layer-btn" type="button">Add</button>
+        </div>
+        <div class="active-layer-row">
+          <label for="active-layer-select">Active layer</label>
+          <select id="active-layer-select"></select>
+        </div>
+        <ul class="layer-list" id="layer-list"></ul>
+      </section>
+
+      <section class="panel" id="selection-panel" hidden>
+        <h2>Selected annotation</h2>
+        <div class="sel-info" id="sel-info"></div>
+        <label class="sel-reassign">
+          <span>Layer</span>
+          <select id="reassign-select"></select>
+        </label>
+        <div class="sel-actions">
+          <button id="sel-copy" type="button">Copy</button>
+          <button id="sel-delete" type="button" class="danger">Delete</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Annotations on this page</h2>
+        <ul class="ann-list" id="ann-list"></ul>
+      </section>
+    </aside>
+  </main>
+
+  <div id="empty-state" class="empty-state" hidden>
+    <p>No preprocessed PDFs found.</p>
+    <p>Run <code>python CalloutExtraction/preprocess.py &lt;pdf&gt;</code> first.</p>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
