@@ -14,6 +14,8 @@
     </div>
     <div class="header-actions">
       <span id="dirty-flag" class="dirty-flag" hidden>Unsaved changes</span>
+      <button id="undo-btn" type="button" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
+      <button id="redo-btn" type="button" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
       <button id="save-btn" type="button" class="primary">Save</button>
     </div>
   </header>
@@ -86,6 +88,20 @@
       </section>
     </aside>
   </main>
+
+  <dialog id="layer-delete-dialog" class="dialog">
+    <h2 id="layer-delete-title">Delete layer</h2>
+    <p id="layer-delete-msg"></p>
+    <label class="dialog-row" id="layer-delete-move-row">
+      <span>Move annotations to</span>
+      <select id="layer-delete-target"></select>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" id="layer-delete-move">Move &amp; delete layer</button>
+      <button type="button" id="layer-delete-remove" class="danger">Delete annotations</button>
+      <button type="button" id="layer-delete-cancel">Cancel</button>
+    </div>
+  </dialog>
 
   <div id="empty-state" class="empty-state" hidden>
     <p>No preprocessed PDFs found.</p>

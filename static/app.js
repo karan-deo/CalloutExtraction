@@ -8,6 +8,14 @@ const PALETTE = [
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 12;
 const MIN_BOX = 0.005; // smallest allowed normalized box edge
+const PAN_STEP = 40; // px the page moves per arrow-key press
+const HISTORY_MAX = 100;
+const AUTOSAVE_MS = 1500;
+
+// Undo/redo holds whole-document snapshots; the doc is small JSON so this is
+// simple and robust. Visibility/selection/zoom are view state and excluded.
+const history = { undo: [], redo: [] };
+let autosaveTimer = null;
 
 const state = {
   pdfs: [],
@@ -78,6 +86,82 @@ function markDirty() {
 }
 
 // ---------------------------------------------------------------------------
+// History (undo/redo) + autosave
+// ---------------------------------------------------------------------------
+
+function cloneDoc() { return structuredClone(state.doc); }
+
+function refresh() { buildPageSelect(); renderAll(); }
+
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    if (state.dirty && state.pdfId) save({ silent: true });
+  }, AUTOSAVE_MS);
+}
+
+function pushUndo(prevDoc) {
+  history.undo.push(prevDoc);
+  if (history.undo.length > HISTORY_MAX) history.undo.shift();
+  history.redo.length = 0;
+}
+
+// Run a document mutation: snapshot for undo, apply, mark dirty, re-render,
+// and debounce a save. The single chokepoint for all doc changes.
+function commit(mutate) {
+  const prev = cloneDoc();
+  mutate();
+  pushUndo(prev);
+  markDirty();
+  refresh();
+  scheduleAutosave();
+}
+
+function resetHistory() {
+  history.undo.length = 0;
+  history.redo.length = 0;
+  clearTimeout(autosaveTimer);
+}
+
+// After replacing state.doc (undo/redo), drop references that no longer exist.
+function reconcileAfterDocChange() {
+  if (state.selectedId &&
+      !state.doc.annotations.some((a) => a.id === state.selectedId)) {
+    state.selectedId = null;
+  }
+  const names = new Set(state.doc.layers.map((l) => l.name));
+  if (state.activeLayer && !names.has(state.activeLayer)) {
+    state.activeLayer = state.doc.layers.length ? state.doc.layers[0].name : null;
+  }
+  state.hiddenLayers.forEach((n) => { if (!names.has(n)) state.hiddenLayers.delete(n); });
+}
+
+function undo() {
+  if (!history.undo.length) return;
+  history.redo.push(cloneDoc());
+  state.doc = history.undo.pop();
+  reconcileAfterDocChange();
+  markDirty();
+  refresh();
+  scheduleAutosave();
+}
+
+function redo() {
+  if (!history.redo.length) return;
+  history.undo.push(cloneDoc());
+  state.doc = history.redo.pop();
+  reconcileAfterDocChange();
+  markDirty();
+  refresh();
+  scheduleAutosave();
+}
+
+function renderHistoryButtons() {
+  $("undo-btn").disabled = !history.undo.length;
+  $("redo-btn").disabled = !history.redo.length;
+}
+
+// ---------------------------------------------------------------------------
 // Data loading
 // ---------------------------------------------------------------------------
 
@@ -144,6 +228,7 @@ async function loadPdf(pdfId) {
     $("pdf-select").value = state.pdfId;
     return;
   }
+  resetHistory();
   state.pdfId = pdfId;
   state.meta = await (await fetch(`/api/pdfs/${pdfId}/meta`)).json();
   state.doc = await (await fetch(`/api/pdfs/${pdfId}/annotations`)).json();
@@ -199,6 +284,7 @@ function renderAll() {
   renderLayers();
   renderSelectionPanel();
   renderAnnList();
+  renderHistoryButtons();
   applyTransform();
 }
 
@@ -320,10 +406,22 @@ function renderLayers() {
       el("span", { className: "layer-name", title: layer.name, text: layer.name }),
       el("span", { className: "layer-count", text: `${onPage}/${total}` }),
       el("button", {
-        className: "vis-toggle",
+        className: "row-btn",
         title: hidden ? "Show layer" : "Hide layer",
         text: hidden ? "Show" : "Hide",
         onclick: () => toggleLayerVisibility(layer.name),
+      }),
+      el("button", {
+        className: "row-btn",
+        title: "Rename layer",
+        text: "Rename",
+        onclick: () => renameLayer(layer.name),
+      }),
+      el("button", {
+        className: "row-btn row-btn-danger",
+        title: "Delete layer",
+        text: "Delete",
+        onclick: () => deleteLayer(layer.name),
       }),
     ]);
     list.appendChild(row);
@@ -344,9 +442,8 @@ function renderSelectionPanel() {
   );
   sel.value = ann.layer;
   sel.onchange = (e) => {
-    ann.layer = e.target.value;
-    markDirty();
-    renderAll();
+    const next = e.target.value;
+    commit(() => { ann.layer = next; });
   };
   $("sel-copy").onclick = () => copyAnnotation(ann.id);
   $("sel-delete").onclick = () => deleteAnnotation(ann.id);
@@ -382,14 +479,11 @@ function selectAnnotation(id) {
 }
 
 function deleteAnnotation(id) {
-  const before = state.doc.annotations.length;
-  state.doc.annotations = state.doc.annotations.filter((a) => a.id !== id);
-  if (state.doc.annotations.length !== before) {
+  if (!state.doc.annotations.some((a) => a.id === id)) return;
+  commit(() => {
+    state.doc.annotations = state.doc.annotations.filter((a) => a.id !== id);
     if (state.selectedId === id) state.selectedId = null;
-    markDirty();
-    buildPageSelect();
-    renderAll();
-  }
+  });
 }
 
 function copyAnnotation(id) {
@@ -409,11 +503,10 @@ function copyAnnotation(id) {
     layer: src.layer,
     bbox: { left, top, right: left + w, bottom: top + h },
   };
-  state.doc.annotations.push(copy);
-  state.selectedId = copy.id;
-  markDirty();
-  buildPageSelect();
-  renderAll();
+  commit(() => {
+    state.doc.annotations.push(copy);
+    state.selectedId = copy.id;
+  });
 }
 
 function createAnnotation(bbox) {
@@ -428,11 +521,10 @@ function createAnnotation(bbox) {
     layer: state.activeLayer,
     bbox,
   };
-  state.doc.annotations.push(ann);
-  state.selectedId = ann.id;
-  markDirty();
-  buildPageSelect();
-  renderAll();
+  commit(() => {
+    state.doc.annotations.push(ann);
+    state.selectedId = ann.id;
+  });
 }
 
 function addLayer() {
@@ -446,11 +538,83 @@ function addLayer() {
     return;
   }
   const color = PALETTE[state.doc.layers.length % PALETTE.length];
-  state.doc.layers.push({ name, color });
-  state.activeLayer = name;
   input.value = "";
-  markDirty();
-  renderAll();
+  commit(() => {
+    state.doc.layers.push({ name, color });
+    state.activeLayer = name;
+  });
+}
+
+function renameLayer(oldName) {
+  const layer = layerByName(oldName);
+  if (!layer) return;
+  const raw = prompt(`Rename layer "${oldName}" to:`, oldName);
+  if (raw === null) return;
+  const name = raw.trim();
+  if (!name || name === oldName) return;
+  if (layerByName(name)) { alert(`A layer named "${name}" already exists.`); return; }
+  commit(() => {
+    layer.name = name;
+    state.doc.annotations.forEach((a) => { if (a.layer === oldName) a.layer = name; });
+    if (state.activeLayer === oldName) state.activeLayer = name;
+    if (state.hiddenLayers.has(oldName)) {
+      state.hiddenLayers.delete(oldName);
+      state.hiddenLayers.add(name);
+    }
+  });
+}
+
+function removeLayerOnly(name) {
+  state.doc.layers = state.doc.layers.filter((l) => l.name !== name);
+}
+
+function deleteLayer(name) {
+  if (!layerByName(name)) return;
+  const count = state.doc.annotations.filter((a) => a.layer === name).length;
+  if (count === 0) {
+    if (!confirm(`Delete layer "${name}"?`)) return;
+    commit(() => removeLayerOnly(name));
+    return;
+  }
+  openLayerDeleteDialog(name, count);
+}
+
+function openLayerDeleteDialog(name, count) {
+  const dlg = $("layer-delete-dialog");
+  $("layer-delete-title").textContent = `Delete layer "${name}"`;
+  $("layer-delete-msg").textContent =
+    `This layer has ${count} annotation(s). Choose what to do with them.`;
+
+  const others = state.doc.layers.filter((l) => l.name !== name);
+  const target = $("layer-delete-target");
+  target.replaceChildren();
+  others.forEach((l) => target.appendChild(el("option", { value: l.name, text: l.name })));
+
+  const canMove = others.length > 0;
+  $("layer-delete-move-row").hidden = !canMove;
+  const moveBtn = $("layer-delete-move");
+  moveBtn.disabled = !canMove;
+  moveBtn.onclick = () => {
+    const dest = target.value;
+    commit(() => {
+      state.doc.annotations.forEach((a) => { if (a.layer === name) a.layer = dest; });
+      removeLayerOnly(name);
+    });
+    dlg.close();
+  };
+
+  const removeBtn = $("layer-delete-remove");
+  removeBtn.textContent = `Delete ${count} annotation(s)`;
+  removeBtn.onclick = () => {
+    commit(() => {
+      state.doc.annotations = state.doc.annotations.filter((a) => a.layer !== name);
+      removeLayerOnly(name);
+    });
+    dlg.close();
+  };
+
+  $("layer-delete-cancel").onclick = () => dlg.close();
+  dlg.showModal();
 }
 
 function toggleLayerVisibility(name) {
@@ -466,7 +630,7 @@ function goToPage(idx) {
   renderAll();
 }
 
-async function save() {
+async function save({ silent = false } = {}) {
   const btn = $("save-btn");
   btn.disabled = true;
   try {
@@ -482,9 +646,11 @@ async function save() {
     if (!res.ok) throw new Error(await res.text());
     state.dirty = false;
     $("dirty-flag").hidden = true;
-    $("hint").textContent = "Saved.";
+    $("hint").textContent = silent ? "Saved (auto)." : "Saved.";
   } catch (err) {
-    alert(`Save failed: ${err.message}`);
+    // Keep dirty so the next change retries and manual Save still works.
+    if (silent) $("hint").textContent = `Autosave failed: ${err.message}`;
+    else alert(`Save failed: ${err.message}`);
   } finally {
     btn.disabled = false;
   }
@@ -514,6 +680,7 @@ function initPointer() {
   let lastX = 0, lastY = 0;
   let draftEl = null, draftStart = null;
   let moveAnn = null, moveStartNorm = null, moveOrigBox = null, moved = false;
+  let moveSnapshot = null;
 
   vp.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
@@ -545,6 +712,7 @@ function initPointer() {
       moveOrigBox = { ...moveAnn.bbox };
       moveStartNorm = toNorm(e.clientX, e.clientY);
       moved = false;
+      moveSnapshot = cloneDoc();
       mode = "move";
       vp.setPointerCapture(e.pointerId);
       return;
@@ -616,8 +784,13 @@ function initPointer() {
       }
       draftEl = null; draftStart = null;
     } else if (mode === "move" && moveAnn) {
-      if (moved) { markDirty(); }
-      moveAnn = null; moveStartNorm = null; moveOrigBox = null;
+      if (moved && moveSnapshot) {
+        pushUndo(moveSnapshot);
+        markDirty();
+        renderHistoryButtons();
+        scheduleAutosave();
+      }
+      moveAnn = null; moveStartNorm = null; moveOrigBox = null; moveSnapshot = null;
     }
     if (mode === "pan") vp.classList.remove("panning");
     mode = null;
@@ -653,6 +826,8 @@ function initControls() {
   $("zoom-out").onclick = () => zoomCentered(1 / 1.25);
   $("zoom-reset").onclick = () => { resetZoom(); applyTransform(); };
   $("rescan-btn").onclick = rescan;
+  $("undo-btn").onclick = undo;
+  $("redo-btn").onclick = redo;
   $("add-layer-btn").onclick = addLayer;
   $("layer-name-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") addLayer();
@@ -665,8 +840,16 @@ function initControls() {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       e.preventDefault(); save(); return;
     }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (e.shiftKey) redo(); else undo();
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
+      e.preventDefault(); redo(); return;
+    }
     switch (e.key.toLowerCase()) {
-      case "v": setTool("select"); break;
+      case "s": setTool("select"); break;
       case "r": setTool("create"); break;
       case "d": if (state.selectedId) deleteAnnotation(state.selectedId); else setTool("delete"); break;
       case "delete": case "backspace":
@@ -674,6 +857,12 @@ function initControls() {
         break;
       case "c": if (state.selectedId) copyAnnotation(state.selectedId); else setTool("copy"); break;
       case "escape": selectAnnotation(null); break;
+      case "arrowup": e.preventDefault(); state.ty -= PAN_STEP; applyTransform(); break;
+      case "arrowdown": e.preventDefault(); state.ty += PAN_STEP; applyTransform(); break;
+      case "arrowleft": e.preventDefault(); state.tx -= PAN_STEP; applyTransform(); break;
+      case "arrowright": e.preventDefault(); state.tx += PAN_STEP; applyTransform(); break;
+      case "+": case "=": zoomCentered(1.25); break;
+      case "-": zoomCentered(1 / 1.25); break;
     }
   });
 
