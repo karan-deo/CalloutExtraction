@@ -6,11 +6,12 @@ const PALETTE = [
   "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16",
 ];
 const MIN_SCALE = 0.25;
-const MAX_SCALE = 12;
-const MIN_BOX = 0.005; // smallest allowed normalized box edge
-const PAN_STEP = 40; // px the page moves per arrow-key press
+const MAX_SCALE = 10;
+const MIN_BOX = 0.001; // smallest allowed normalized box edge
+const RESIZE_DIRS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"]; // resize handle positions
+const PAN_STEP = 50; // px the page moves per arrow-key press
 const HISTORY_MAX = 100;
-const AUTOSAVE_MS = 1500;
+const AUTOSAVE_MS = 1000;
 
 // Undo/redo holds whole-document snapshots; the doc is small JSON so this is
 // simple and robust. Visibility/selection/zoom are view state and excluded.
@@ -224,12 +225,17 @@ async function rescan() {
 }
 
 async function loadPdf(pdfId) {
-  if (state.dirty && !confirm("Discard unsaved changes and switch PDF?")) {
-    $("pdf-select").value = state.pdfId;
-    return;
+  if (state.dirty) {
+    if (confirm("You have unsaved changes. Save them before switching?\n\nOK = Save   Cancel = more options")) {
+      await save();
+      if (state.dirty) { $("pdf-select").value = state.pdfId; return; } // save failed -> stay
+    } else if (!confirm("Discard your unsaved changes?\n\nOK = Discard   Cancel = stay on this PDF")) {
+      $("pdf-select").value = state.pdfId; return; // cancel -> stay
+    }
   }
   resetHistory();
   state.pdfId = pdfId;
+  $("pdf-select").value = pdfId;
   state.meta = await (await fetch(`/api/pdfs/${pdfId}/meta`)).json();
   state.doc = await (await fetch(`/api/pdfs/${pdfId}/annotations`)).json();
   if (!Array.isArray(state.doc.layers)) state.doc.layers = [];
@@ -304,7 +310,7 @@ function renderToolbar() {
   const vp = $("viewport");
   vp.classList.toggle("tool-create", state.tool === "create");
   const hints = {
-    select: "Select: click a box to select; drag a box to move it; drag empty space to pan.",
+    select: "Select: click a box to select; drag a box to move it; drag a handle to resize; drag empty space to pan.",
     create: "Create: drag on the page to draw a rectangle in the active layer.",
     delete: "Delete: click a box to remove it.",
     copy: "Copy: click a box to duplicate it.",
@@ -372,6 +378,11 @@ function buildBoxEl(ann) {
   }, [
     el("span", { className: "bbox-label", style: `background:${color}`, text: ann.layer || "—" }),
   ]);
+  if (selected) {
+    RESIZE_DIRS.forEach((dir) =>
+      box.appendChild(el("div", { className: `bbox-handle handle-${dir}`, "data-dir": dir }))
+    );
+  }
   return box;
 }
 
@@ -630,6 +641,14 @@ function goToPage(idx) {
   renderAll();
 }
 
+function goToAdjacentPdf(delta) {
+  if (!state.pdfs.length) return;
+  const cur = state.pdfs.findIndex((p) => p.id === state.pdfId);
+  const next = cur + delta;
+  if (next < 0 || next >= state.pdfs.length) return; // no wrap at ends
+  loadPdf(state.pdfs[next].id);
+}
+
 async function save({ silent = false } = {}) {
   const btn = $("save-btn");
   btn.disabled = true;
@@ -681,6 +700,8 @@ function initPointer() {
   let draftEl = null, draftStart = null;
   let moveAnn = null, moveStartNorm = null, moveOrigBox = null, moved = false;
   let moveSnapshot = null;
+  let resizeAnn = null, resizeDir = null, resizeOrigBox = null;
+  let resizeStartNorm = null, resized = false, resizeSnapshot = null;
 
   vp.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
@@ -703,6 +724,22 @@ function initPointer() {
       $("zoom-content").querySelector(".image-stage").appendChild(draftEl);
       vp.setPointerCapture(e.pointerId);
       return;
+    }
+
+    if (state.tool === "select") {
+      const handleEl = e.target.closest(".bbox-handle");
+      if (handleEl) {
+        const id = handleEl.parentElement.dataset.id;
+        resizeAnn = state.doc.annotations.find((a) => a.id === id);
+        resizeDir = handleEl.dataset.dir;
+        resizeOrigBox = { ...resizeAnn.bbox };
+        resizeStartNorm = toNorm(e.clientX, e.clientY);
+        resized = false;
+        resizeSnapshot = cloneDoc();
+        mode = "resize";
+        vp.setPointerCapture(e.pointerId);
+        return;
+      }
     }
 
     if (boxEl && state.tool === "select") {
@@ -765,6 +802,25 @@ function initPointer() {
         boxEl.style.left = `${left * 100}%`;
         boxEl.style.top = `${top * 100}%`;
       }
+    } else if (mode === "resize" && resizeAnn) {
+      const n = toNorm(e.clientX, e.clientY);
+      if (!n || !resizeStartNorm) return;
+      const dx = n.x - resizeStartNorm.x;
+      const dy = n.y - resizeStartNorm.y;
+      if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) resized = true;
+      let { left, top, right, bottom } = resizeOrigBox;
+      if (resizeDir.includes("w")) left = Math.min(clamp01(left + dx), right - MIN_BOX);
+      if (resizeDir.includes("e")) right = Math.max(clamp01(right + dx), left + MIN_BOX);
+      if (resizeDir.includes("n")) top = Math.min(clamp01(top + dy), bottom - MIN_BOX);
+      if (resizeDir.includes("s")) bottom = Math.max(clamp01(bottom + dy), top + MIN_BOX);
+      resizeAnn.bbox = { left, top, right, bottom };
+      const boxEl = $("zoom-content").querySelector(`.bbox[data-id="${resizeAnn.id}"]`);
+      if (boxEl) {
+        boxEl.style.left = `${left * 100}%`;
+        boxEl.style.top = `${top * 100}%`;
+        boxEl.style.width = `${(right - left) * 100}%`;
+        boxEl.style.height = `${(bottom - top) * 100}%`;
+      }
     }
   });
 
@@ -791,6 +847,15 @@ function initPointer() {
         scheduleAutosave();
       }
       moveAnn = null; moveStartNorm = null; moveOrigBox = null; moveSnapshot = null;
+    } else if (mode === "resize" && resizeAnn) {
+      if (resized && resizeSnapshot) {
+        pushUndo(resizeSnapshot);
+        markDirty();
+        renderHistoryButtons();
+        scheduleAutosave();
+      }
+      resizeAnn = null; resizeDir = null; resizeOrigBox = null;
+      resizeStartNorm = null; resizeSnapshot = null;
     }
     if (mode === "pan") vp.classList.remove("panning");
     mode = null;
@@ -857,10 +922,26 @@ function initControls() {
         break;
       case "c": if (state.selectedId) copyAnnotation(state.selectedId); else setTool("copy"); break;
       case "escape": selectAnnotation(null); break;
-      case "arrowdown": e.preventDefault(); state.ty -= PAN_STEP; applyTransform(); break;
-      case "arrowup": e.preventDefault(); state.ty += PAN_STEP; applyTransform(); break;
-      case "arrowright": e.preventDefault(); state.tx -= PAN_STEP; applyTransform(); break;
-      case "arrowleft": e.preventDefault(); state.tx += PAN_STEP; applyTransform(); break;
+      case "arrowdown":
+        e.preventDefault();
+        if (e.shiftKey) goToAdjacentPdf(1);
+        else { state.ty -= PAN_STEP; applyTransform(); }
+        break;
+      case "arrowup":
+        e.preventDefault();
+        if (e.shiftKey) goToAdjacentPdf(-1);
+        else { state.ty += PAN_STEP; applyTransform(); }
+        break;
+      case "arrowright":
+        e.preventDefault();
+        if (e.shiftKey) goToPage(state.pageIdx + 1);
+        else { state.tx -= PAN_STEP; applyTransform(); }
+        break;
+      case "arrowleft":
+        e.preventDefault();
+        if (e.shiftKey) goToPage(state.pageIdx - 1);
+        else { state.tx += PAN_STEP; applyTransform(); }
+        break;
       case "+": case "=": zoomCentered(1.25); break;
       case "-": zoomCentered(1 / 1.25); break;
       case "h": resetZoom(); applyTransform(); break;

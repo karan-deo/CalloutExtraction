@@ -127,6 +127,25 @@ main {
 }
 .bbox.selectable { cursor: pointer; }
 .bbox.selected { opacity: 1; box-shadow: 0 0 0 2px rgba(255,255,255,0.85); z-index: 3; }
+.bbox-handle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: #fff;
+  border: 1px solid #1e293b;
+  border-radius: 2px;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+}
+.handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+.handle-n  { left: 50%; top: 0; cursor: ns-resize; }
+.handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.handle-e  { left: 100%; top: 50%; cursor: ew-resize; }
+.handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.handle-s  { left: 50%; top: 100%; cursor: ns-resize; }
+.handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.handle-w  { left: 0; top: 50%; cursor: ew-resize; }
 .bbox-label {
   position: absolute;
   top: -1.4em;
