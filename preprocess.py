@@ -68,7 +68,7 @@ ROOT_REQUEST = "_root"
 # Upper bound on auto-selected worker processes. Each high-DPI pixmap can hold
 # ~10-25 MB, so the default fan-out is capped to avoid memory pressure on
 # many-core machines. An explicit ``--workers`` value overrides this ceiling.
-_MAX_AUTO_WORKERS = 8
+_MAX_AUTO_WORKERS = max(1, (int(os.cpu_count()) - 1) or 1)
 
 # Per-process cache holding the most recently opened document, so a worker that
 # renders several consecutive pages of the same PDF avoids re-opening it. Lives

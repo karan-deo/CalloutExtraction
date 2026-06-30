@@ -22,6 +22,7 @@ from pathlib import Path
 
 from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory
 
+import discipline
 import preprocess
 from logging_config import setup_logging
 
@@ -69,6 +70,15 @@ def _empty_annotations(pdf_id: str) -> dict:
     return {"pdf_id": pdf_id, "layers": [], "annotations": []}
 
 
+def _required_pages(meta: dict) -> list[dict]:
+    """Pages whose sheet name matches the required-sheet filter.
+
+    Page ``number`` values are preserved, so page-image URLs and stored
+    annotations keep referring to the original PDF pages.
+    """
+    return [p for p in meta.get("pages", []) if discipline.is_required(p.get("sheet_name"))]
+
+
 # ---------------------------------------------------------------------------
 # Static frontend
 # ---------------------------------------------------------------------------
@@ -112,12 +122,15 @@ def list_pdfs():
             if not (pdf_dir.is_dir() and meta_path.is_file()):
                 continue
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            page_count = len(_required_pages(meta))
+            if page_count == 0:
+                continue  # no required (A/S) sheets -> hide the PDF entirely
             pdfs.append(
                 {
                     "id": meta.get("pdf_id", f"{req_dir.name}/{pdf_dir.name}"),
                     "title": meta.get("title", pdf_dir.name),
                     "request_id": meta.get("request_id", req_dir.name),
-                    "page_count": meta.get("page_count", 0),
+                    "page_count": page_count,
                 }
             )
     pdfs.sort(key=lambda p: (p["request_id"], p["title"]))
@@ -131,7 +144,11 @@ def get_meta(pdf_id: str):
     if not meta_path.is_file():
         logger.warning("meta.json missing for %s", pdf_id)
         abort(404, description="meta.json missing")
-    return jsonify(json.loads(meta_path.read_text(encoding="utf-8")))
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    pages = _required_pages(meta)
+    meta["pages"] = pages
+    meta["page_count"] = len(pages)
+    return jsonify(meta)
 
 
 @app.route("/api/pdfs/<path:pdf_id>/pages/<int:page_num>.png")
@@ -205,4 +222,4 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
     logger.info("Serving on http://%s:%s", host, port)
-    app.run(host=host, port=port, debug=True, use_reloader=True)
+    app.run(host=host, port=port, debug=True, use_reloader=False)
