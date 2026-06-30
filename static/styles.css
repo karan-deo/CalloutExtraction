@@ -13,28 +13,42 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
 body {
   margin: 0;
   font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 header {
-  padding: 0.85rem 1rem;
+  padding: 0.45rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  flex-shrink: 0;
+}
+.title-block h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
 header .meta {
   color: var(--muted);
   font-size: 0.8rem;
-  margin-top: 0.15rem;
+  margin-top: 0.1rem;
 }
 .header-actions {
   display: flex;
@@ -91,6 +105,7 @@ button:disabled {
   align-items: center;
   border-bottom: 1px solid var(--border);
   background: #121a24;
+  flex-shrink: 0;
 }
 .picker,
 .page-nav,
@@ -104,6 +119,13 @@ button:disabled {
 }
 .tools {
   gap: 0.3rem;
+}
+.tool {
+  min-width: 2.1rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 1rem;
+  line-height: 1;
+  text-align: center;
 }
 .tool.active {
   background: var(--accent);
@@ -121,11 +143,25 @@ button:disabled {
   min-width: 3.2rem;
   text-align: center;
 }
+#pdf-select {
+  max-width: 16rem;
+}
+#page-select {
+  max-width: 18rem;
+}
+#pdf-select,
+#page-select {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 main {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(320px, 1fr) 320px;
-  min-height: calc(100vh - 122px);
+  overflow: hidden;
 }
 @media (max-width: 960px) {
   main {
@@ -269,10 +305,16 @@ main {
 }
 
 .hint {
-  margin-top: 0.5rem;
+  flex-shrink: 0;
+  padding: 0.3rem 1.25rem;
   color: var(--muted);
   font-size: 0.78rem;
   min-height: 1.1em;
+  border-bottom: 1px solid var(--border);
+  background: #121a24;
+}
+.hint:empty {
+  display: none;
 }
 
 .side {

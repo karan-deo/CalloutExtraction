@@ -14,6 +14,7 @@
     </div>
     <div class="header-actions">
       <span id="dirty-flag" class="dirty-flag" hidden>Unsaved changes</span>
+      <button id="rescan-btn" type="button" title="Re-scan pdfs/ for new PDFs">Rescan</button>
       <button id="undo-btn" type="button" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
       <button id="redo-btn" type="button" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
       <button id="save-btn" type="button" class="primary">Save</button>
@@ -24,7 +25,6 @@
     <label class="picker">
       <span>PDF</span>
       <select id="pdf-select"></select>
-      <button id="rescan-btn" type="button" title="Re-scan pdfs/ for new PDFs">Rescan</button>
     </label>
     <div class="page-nav">
       <button id="prev-page" type="button" title="Previous page">&larr;</button>
@@ -33,10 +33,10 @@
     </div>
 
     <div class="tools" id="tools">
-      <button class="tool" data-tool="select" title="Select / move (V)">Select</button>
-      <button class="tool" data-tool="create" title="Draw rectangle (R)">Create</button>
-      <button class="tool" data-tool="delete" title="Delete (D / Del)">Delete</button>
-      <button class="tool" data-tool="copy" title="Duplicate selected (C)">Copy</button>
+      <button class="tool" data-tool="select" title="Select / move (V)" aria-label="Select / move">&#x2196;</button>
+      <button class="tool" data-tool="create" title="Draw rectangle (R)" aria-label="Draw rectangle">&#x25AD;</button>
+      <button class="tool" data-tool="delete" title="Delete (D / Del)" aria-label="Delete">&#x2715;</button>
+      <button class="tool" data-tool="copy" title="Duplicate selected (C)" aria-label="Duplicate selected">&#x29C9;</button>
     </div>
 
     <div class="zoom-controls">
@@ -47,12 +47,13 @@
     </div>
   </div>
 
+  <div class="hint" id="hint"></div>
+
   <main>
     <section class="canvas-wrap">
       <div class="viewport" id="viewport">
         <div class="zoom-content" id="zoom-content"></div>
       </div>
-      <div class="hint" id="hint"></div>
     </section>
 
     <aside class="side">

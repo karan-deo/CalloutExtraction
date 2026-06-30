@@ -7,6 +7,7 @@ const PALETTE = [
 ];
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 10;
+const DEFAULT_SCALE = 0.9; // default/reset zoom; slightly under 100% so the full page fits
 const MIN_BOX = 0.001; // smallest allowed normalized box edge
 const RESIZE_DIRS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"]; // resize handle positions
 const PAN_STEP = 50; // px the page moves per arrow-key press
@@ -29,7 +30,7 @@ const state = {
   tool: "select",
   selectedId: null,
   dirty: false,
-  scale: 1,
+  scale: DEFAULT_SCALE,
   tx: 0,
   ty: 0,
 };
@@ -261,7 +262,15 @@ function applyTransform() {
   $("zoom-level").textContent = `${Math.round(state.scale * 100)}%`;
 }
 
-function resetZoom() { state.scale = 1; state.tx = 0; state.ty = 0; }
+function resetZoom() {
+  state.scale = DEFAULT_SCALE;
+  // The page is rendered at the viewport's full width, so when scaled below
+  // 100% it leaves slack on the right; offset by half of it to center it.
+  const vp = $("viewport");
+  const w = vp ? vp.clientWidth : 0;
+  state.tx = (w * (1 - DEFAULT_SCALE)) / 2;
+  state.ty = 0;
+}
 
 function zoomAt(vx, vy, factor) {
   const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, state.scale * factor));
