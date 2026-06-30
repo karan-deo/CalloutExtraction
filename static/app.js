@@ -323,7 +323,10 @@ function buildPageSelect() {
   sel.replaceChildren();
   state.meta.pages.forEach((page, idx) => {
     const count = state.doc.annotations.filter((a) => a.page === page.number).length;
-    sel.appendChild(el("option", { value: String(idx), text: `Page ${page.number} (${count})` }));
+    const label = page.sheet_name
+      ? `Page ${page.number} · ${page.sheet_name} (${count})`
+      : `Page ${page.number} (${count})`;
+    sel.appendChild(el("option", { value: String(idx), text: label }));
   });
   sel.onchange = (e) => goToPage(Number(e.target.value));
 }
