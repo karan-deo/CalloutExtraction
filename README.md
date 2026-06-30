@@ -15,7 +15,57 @@ It depends on `flask` and `pymupdf`.
   different layer.
 - Save all layers + boxes to `data/<pdf>/annotations.json`.
 
-## Install
+## Install & setup (uv)
+
+This project is managed with [uv](https://docs.astral.sh/uv/). uv handles the
+Python toolchain, the virtual environment, and dependency resolution from the
+committed `uv.lock`.
+
+> Run all `uv` commands from the `CalloutExtraction/` directory (the one holding
+> `pyproject.toml` and `uv.lock`).
+
+**1. Install uv** (Windows, via [WinGet](https://docs.astral.sh/uv/getting-started/installation/#winget)):
+
+```powershell
+winget install --id=astral-sh.uv -e
+```
+
+On macOS / Linux use the standalone installer instead
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`). See the
+[installation docs](https://docs.astral.sh/uv/getting-started/installation/)
+for other options.
+
+**2. Install a matching Python.** `pyproject.toml` requires Python `>=3.14`; uv
+can fetch it for you:
+
+```bash
+uv python install 3.14
+```
+
+**3. Sync dependencies.** This creates a `.venv/` and installs the exact,
+locked versions from `uv.lock`:
+
+```bash
+uv sync
+```
+
+**4. Run the app** without manually activating the venv:
+
+```bash
+uv run app.py        # open http://127.0.0.1:5000
+```
+
+(If you prefer, activate the venv first — `.venv\Scripts\activate` on Windows,
+`source .venv/bin/activate` on macOS / Linux — then the plain
+`python CalloutExtraction/app.py` command below works too.)
+
+`uv.lock` pins exact dependency versions for reproducible installs. To change
+dependencies, edit `pyproject.toml` and run `uv lock`, or use `uv add <pkg>` /
+`uv remove <pkg>`.
+
+### pip (fallback)
+
+If you'd rather not use uv:
 
 ```bash
 pip install -r requirements.txt
@@ -27,8 +77,8 @@ Put your PDFs under `CalloutExtraction/pdfs/`, mirroring the project's data
 layout:
 
 ```
-CalloutExtraction/pdfs/
-    requests/<request_id>/pdfs/<file>.pdf
+CalloutExtraction/pdfs/requests/
+    <request_id>/pdfs/<file>.pdf
 ```
 
 The **request id** is the folder that contains the `pdfs/` subfolder. PDFs in
@@ -39,7 +89,8 @@ drop multiple requests in at once.
 ## 2. Run the UI
 
 ```bash
-python CalloutExtraction/app.py
+uv run app.py                  # from CalloutExtraction/ (recommended)
+python CalloutExtraction/app.py  # or, inside an activated venv
 # open http://127.0.0.1:5000
 ```
 
@@ -64,12 +115,12 @@ python CalloutExtraction/preprocess.py --dir DIR    # a specific folder
 
 ## Using the tools
 
-| Tool | What it does |
-| --- | --- |
-| **Select** (V) | Click a box to select it; drag a box to move it; drag empty space to pan. |
-| **Create** (R) | Drag on the page to draw a rectangle in the **active layer**. |
-| **Delete** (D / Del) | Click a box to delete it (or delete the selected box). |
-| **Copy** (C) | Click a box to duplicate it (or duplicate the selected box). |
+| Tool                 | What it does                                                              |
+| -------------------- | ------------------------------------------------------------------------- |
+| **Select** (V)       | Click a box to select it; drag a box to move it; drag empty space to pan. |
+| **Create** (R)       | Drag on the page to draw a rectangle in the **active layer**.             |
+| **Delete** (D / Del) | Click a box to delete it (or delete the selected box).                    |
+| **Copy** (C)         | Click a box to duplicate it (or duplicate the selected box).              |
 
 Other:
 
@@ -94,7 +145,7 @@ Other:
       "page": 3,
       "type": "rect",
       "layer": "Ducts",
-      "bbox": { "left": 0.10, "top": 0.20, "right": 0.30, "bottom": 0.40 }
+      "bbox": { "left": 0.1, "top": 0.2, "right": 0.3, "bottom": 0.4 }
     }
   ]
 }
@@ -102,9 +153,3 @@ Other:
 
 Bounding boxes are stored **normalized** (0..1) relative to the page image, so
 they are independent of render resolution.
-
-
-
-Undo Redo
-Delete Layer
-AutoSave
