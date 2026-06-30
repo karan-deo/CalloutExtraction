@@ -31,9 +31,10 @@ app = Flask(__name__, static_folder=None)
 
 
 def _pdf_dir(pdf_id: str) -> Path:
-    """Resolve a PDF data dir, rejecting anything that escapes ``data/``."""
-    target = (_DATA_DIR / pdf_id).resolve()
-    if target.parent != _DATA_DIR.resolve() or not target.is_dir():
+    """Resolve a (nested) PDF data dir, rejecting anything that escapes ``data/``."""
+    data_root = _DATA_DIR.resolve()
+    target = (data_root / pdf_id).resolve()
+    if not target.is_dir() or data_root not in target.parents:
         abort(404, description=f"unknown pdf id: {pdf_id}")
     return target
 
@@ -74,24 +75,27 @@ def list_pdfs():
     if not _DATA_DIR.is_dir():
         return jsonify([])
     pdfs = []
-    for entry in sorted(_DATA_DIR.iterdir()):
-        meta_path = entry / "meta.json"
-        if not (entry.is_dir() and meta_path.is_file()):
+    for req_dir in sorted(_DATA_DIR.iterdir()):
+        if not req_dir.is_dir():
             continue
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        pdfs.append(
-            {
-                "id": meta.get("pdf_id", entry.name),
-                "title": meta.get("title", entry.name),
-                "request_id": meta.get("request_id", ""),
-                "page_count": meta.get("page_count", 0),
-            }
-        )
+        for pdf_dir in sorted(req_dir.iterdir()):
+            meta_path = pdf_dir / "meta.json"
+            if not (pdf_dir.is_dir() and meta_path.is_file()):
+                continue
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            pdfs.append(
+                {
+                    "id": meta.get("pdf_id", f"{req_dir.name}/{pdf_dir.name}"),
+                    "title": meta.get("title", pdf_dir.name),
+                    "request_id": meta.get("request_id", req_dir.name),
+                    "page_count": meta.get("page_count", 0),
+                }
+            )
     pdfs.sort(key=lambda p: (p["request_id"], p["title"]))
     return jsonify(pdfs)
 
 
-@app.route("/api/pdfs/<pdf_id>/meta")
+@app.route("/api/pdfs/<path:pdf_id>/meta")
 def get_meta(pdf_id: str):
     meta_path = _pdf_dir(pdf_id) / "meta.json"
     if not meta_path.is_file():
@@ -99,7 +103,7 @@ def get_meta(pdf_id: str):
     return jsonify(json.loads(meta_path.read_text(encoding="utf-8")))
 
 
-@app.route("/api/pdfs/<pdf_id>/pages/<int:page_num>.png")
+@app.route("/api/pdfs/<path:pdf_id>/pages/<int:page_num>.png")
 def get_page_image(pdf_id: str, page_num: int):
     image_path = _pdf_dir(pdf_id) / "pages" / f"page_{page_num}.png"
     if not image_path.is_file():
@@ -107,7 +111,7 @@ def get_page_image(pdf_id: str, page_num: int):
     return send_file(image_path, mimetype="image/png")
 
 
-@app.route("/api/pdfs/<pdf_id>/annotations", methods=["GET"])
+@app.route("/api/pdfs/<path:pdf_id>/annotations", methods=["GET"])
 def get_annotations(pdf_id: str):
     ann_path = _pdf_dir(pdf_id) / "annotations.json"
     if not ann_path.is_file():
@@ -115,7 +119,7 @@ def get_annotations(pdf_id: str):
     return jsonify(json.loads(ann_path.read_text(encoding="utf-8")))
 
 
-@app.route("/api/pdfs/<pdf_id>/annotations", methods=["PUT"])
+@app.route("/api/pdfs/<path:pdf_id>/annotations", methods=["PUT"])
 def put_annotations(pdf_id: str):
     pdf_dir = _pdf_dir(pdf_id)
     payload = request.get_json(silent=True)
@@ -166,4 +170,4 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
     print(f"Serving on http://{host}:{port}")
-    app.run(host=host, port=port, debug=True, use_reloader=False)
+    app.run(host=host, port=port, debug=True, use_reloader=True)
