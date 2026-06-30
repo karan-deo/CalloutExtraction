@@ -12,3 +12,6 @@ wheels/
 
 data
 requests
+
+# Logs
+logs
