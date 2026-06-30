@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -49,9 +50,95 @@ ROOT_REQUEST = "_root"
 
 
 def _slugify(name: str) -> str:
-    """Turn a name into a filesystem- and URL-safe token."""
+    """Turn a name into a filesystem and URL safe token."""
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
     return slug or "x"
+
+
+def _normalize(name: str) -> str:
+    """Normalise a file/sheet name for matching.
+
+    Drops a trailing ``.pdf`` and a trailing ``_<timestamp>`` (the upload epoch
+    suffix that appears inconsistently across requests), and lowercases. This
+    lets a dropped PDF stem match either a blueprint ``name`` or the basename of
+    its ``file_url``.
+    """
+    stem = re.sub(r"\.pdf$", "", name, flags=re.IGNORECASE)
+    stem = re.sub(r"_\d{6,}$", "", stem)
+    return stem.strip().lower()
+
+
+def _request_dir(pdf_path: Path, request_id: str) -> Path | None:
+    """Locate the ``requests/<id>/`` folder holding the metadata JSON files."""
+    candidate = pdf_path.parent.parent  # requests/<id>/pdfs/<file>.pdf -> requests/<id>
+    if (candidate / "blueprint_files.json").is_file():
+        return candidate
+    fallback = _INPUT_DIR / "requests" / request_id
+    if (fallback / "blueprint_files.json").is_file():
+        return fallback
+    return None
+
+
+def _sheet_name_map(pdf_path: Path, request_id: str) -> dict[int, str | None]:
+    """Map 1-based page number -> sheet name for ``pdf_path``.
+
+    Best-effort: matches the PDF to a blueprint file (via ``blueprint_files.json``)
+    then reads ``worksheets_metadata.json`` for that file's sheets. The sheet
+    name is the worksheet ``name`` when present, otherwise the blueprint file's
+    ``name``. Returns ``{}`` when the metadata is missing or anything fails.
+    """
+    try:
+        req_dir = _request_dir(pdf_path, request_id)
+        if req_dir is None:
+            return {}
+        blueprints = json.loads(
+            (req_dir / "blueprint_files.json").read_text(encoding="utf-8")
+        )
+        files_info = blueprints.get("files_info", [])
+        if not files_info:
+            return {}
+
+        target_norm = _normalize(pdf_path.stem)
+        matched = None
+        if len(files_info) == 1:
+            matched = files_info[0]
+        else:
+            for info in files_info:
+                name_norm = _normalize(info.get("name", "") or "")
+                url_norm = _normalize(Path(info.get("file_url", "") or "").name)
+                if target_norm and target_norm in (name_norm, url_norm):
+                    matched = info
+                    break
+        if matched is None:
+            return {}
+
+        blueprint_id = matched.get("id")
+        blueprint_name = matched.get("name") or None
+
+        worksheets_path = req_dir / "worksheets_metadata.json"
+        if not worksheets_path.is_file():
+            return {}
+        worksheets = json.loads(worksheets_path.read_text(encoding="utf-8"))
+
+        mapping: dict[int, str | None] = {}
+        for sheet in worksheets:
+            if sheet.get("blueprint_file_id") != blueprint_id:
+                continue
+            page_no = sheet.get("page_no")
+            if not isinstance(page_no, int):
+                continue
+            name = sheet.get("name") or blueprint_name
+            mapping[page_no] = name
+        return mapping
+    except (json.JSONDecodeError, OSError, KeyError, TypeError):
+        return {}
+
+
+def _apply_sheet_names(meta: dict, mapping: dict[int, str | None]) -> None:
+    """Attach ``sheet_name`` to each page and mark the meta as resolved."""
+    for page in meta.get("pages", []):
+        page["sheet_name"] = mapping.get(page.get("number"))
+    meta["sheet_names_resolved"] = True
 
 
 def derive_request_id(pdf_path: Path, input_dir: Path) -> str:
@@ -85,8 +172,43 @@ def derive_request_id(pdf_path: Path, input_dir: Path) -> str:
 
 
 def data_id(request_id: str, pdf_stem: str) -> str:
-    """Deterministic data-dir id, stable across runs for the same PDF."""
-    return f"{_slugify(request_id)}__{_slugify(pdf_stem)}"
+    """Deterministic nested data id ``"<request>/<pdf>"``, stable per PDF."""
+    return f"{_slugify(request_id)}/{_slugify(pdf_stem)}"
+
+
+def _migrate_flat_dirs(log=print) -> None:
+    """Migrate legacy flat ``data/<request>__<pdf>/`` dirs to ``data/<request>/<pdf>/``.
+
+    Idempotent and best-effort: a flat dir is recognised by a ``__`` in its name
+    plus a ``meta.json`` directly inside (request ids/pdf slugs never contain
+    ``__``). Annotations and rendered pages move with the folder; meta's
+    ``pdf_id`` is rewritten to the new nested id. One failure does not abort the
+    rest.
+    """
+    if not _DATA_DIR.is_dir():
+        return
+    for entry in sorted(_DATA_DIR.iterdir()):
+        if not (entry.is_dir() and "__" in entry.name):
+            continue
+        if not (entry / "meta.json").is_file():
+            continue
+        request_slug, pdf_slug = entry.name.split("__", 1)
+        target = _DATA_DIR / request_slug / pdf_slug
+        if target.exists():
+            log(f"  migrate: target exists, skipping {entry.name}")
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(entry), str(target))
+            meta_path = target / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["pdf_id"] = f"{request_slug}/{pdf_slug}"
+            meta_path.write_text(
+                json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            log(f"  migrated {entry.name} -> {request_slug}/{pdf_slug}")
+        except (OSError, json.JSONDecodeError) as exc:  # noqa: BLE001
+            log(f"  migrate failed for {entry.name}: {exc}")
 
 
 def _is_up_to_date(pdf_path: Path, pdf_id: str, dpi: int) -> bool:
@@ -149,10 +271,30 @@ def render_pdf(pdf_path: Path, pdf_id: str, request_id: str, dpi: int) -> dict:
         "page_count": page_count,
         "pages": pages,
     }
+    _apply_sheet_names(meta, _sheet_name_map(pdf_path, request_id))
     (out_dir / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return meta
+
+
+def _ensure_sheet_names(pdf_path: Path, pdf_id: str, request_id: str) -> None:
+    """Backfill ``sheet_name`` into an already-rendered ``meta.json``.
+
+    Cheap: rewrites the JSON only (no PNG re-render) and only when sheet names
+    have not been resolved yet, so subsequent startups do nothing.
+    """
+    meta_path = _DATA_DIR / pdf_id / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if meta.get("sheet_names_resolved"):
+        return
+    _apply_sheet_names(meta, _sheet_name_map(pdf_path, request_id))
+    meta_path.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def process_pdf(
@@ -164,6 +306,7 @@ def process_pdf(
     """Render ``pdf_path`` if needed. Returns ``{status, pdf_id, ...}``."""
     pdf_id = data_id(request_id, pdf_path.stem)
     if not force and _is_up_to_date(pdf_path, pdf_id, dpi):
+        _ensure_sheet_names(pdf_path, pdf_id, request_id)
         return {"status": "skipped", "pdf_id": pdf_id, "request_id": request_id}
     meta = render_pdf(pdf_path, pdf_id, request_id, dpi)
     return {
@@ -191,6 +334,7 @@ def auto_preprocess(
     """Process all PDFs under ``input_dir``. Safe to call on every startup."""
     input_dir.mkdir(parents=True, exist_ok=True)
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_flat_dirs(log=log)
     found = discover_input_pdfs(input_dir)
     rendered = skipped = 0
     if not found:
