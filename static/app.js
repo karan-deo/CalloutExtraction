@@ -857,12 +857,13 @@ function initControls() {
         break;
       case "c": if (state.selectedId) copyAnnotation(state.selectedId); else setTool("copy"); break;
       case "escape": selectAnnotation(null); break;
-      case "arrowup": e.preventDefault(); state.ty -= PAN_STEP; applyTransform(); break;
-      case "arrowdown": e.preventDefault(); state.ty += PAN_STEP; applyTransform(); break;
-      case "arrowleft": e.preventDefault(); state.tx -= PAN_STEP; applyTransform(); break;
-      case "arrowright": e.preventDefault(); state.tx += PAN_STEP; applyTransform(); break;
+      case "arrowdown": e.preventDefault(); state.ty -= PAN_STEP; applyTransform(); break;
+      case "arrowup": e.preventDefault(); state.ty += PAN_STEP; applyTransform(); break;
+      case "arrowright": e.preventDefault(); state.tx -= PAN_STEP; applyTransform(); break;
+      case "arrowleft": e.preventDefault(); state.tx += PAN_STEP; applyTransform(); break;
       case "+": case "=": zoomCentered(1.25); break;
       case "-": zoomCentered(1 / 1.25); break;
+      case "h": resetZoom(); applyTransform(); break;
     }
   });
 
