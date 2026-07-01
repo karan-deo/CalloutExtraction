@@ -22,7 +22,6 @@ from pathlib import Path
 
 from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory
 
-import discipline
 import preprocess
 from logging_config import setup_logging
 
@@ -70,15 +69,6 @@ def _empty_annotations(pdf_id: str) -> dict:
     return {"pdf_id": pdf_id, "layers": [], "annotations": []}
 
 
-def _required_pages(meta: dict) -> list[dict]:
-    """Pages whose sheet name matches the required-sheet filter.
-
-    Page ``number`` values are preserved, so page-image URLs and stored
-    annotations keep referring to the original PDF pages.
-    """
-    return [p for p in meta.get("pages", []) if discipline.is_required(p.get("sheet_name"))]
-
-
 # ---------------------------------------------------------------------------
 # Static frontend
 # ---------------------------------------------------------------------------
@@ -122,7 +112,8 @@ def list_pdfs():
             if not (pdf_dir.is_dir() and meta_path.is_file()):
                 continue
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            page_count = len(_required_pages(meta))
+            # meta.json is already filtered to A/S pages at render time.
+            page_count = meta.get("page_count", len(meta.get("pages", [])))
             if page_count == 0:
                 continue  # no required (A/S) sheets -> hide the PDF entirely
             pdfs.append(
@@ -145,9 +136,6 @@ def get_meta(pdf_id: str):
         logger.warning("meta.json missing for %s", pdf_id)
         abort(404, description="meta.json missing")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    pages = _required_pages(meta)
-    meta["pages"] = pages
-    meta["page_count"] = len(pages)
     return jsonify(meta)
 
 

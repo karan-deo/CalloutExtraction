@@ -13,15 +13,22 @@ The ``request_id`` is the folder that contains the ``pdfs/`` subfolder. PDFs
 placed directly in a subfolder (no ``pdfs/`` level) use that subfolder name as
 the request id, and PDFs sitting at the top level are grouped under ``_root``.
 
+Only Architectural (A*) and Structural (S*) sheets are rendered: sheet names
+are resolved before rasterisation and non-A/S pages are skipped, so the output
+already matches the UI's required-sheet filter (see ``discipline.py``). Rendered
+page ``number`` values stay tied to the real PDF pages, so image URLs and stored
+annotations keep referring to the original pages.
+
 For each PDF this writes::
 
     CalloutExtraction/data/<request_id>__<pdf_stem>/
-        meta.json            # request_id, source path/stat, page sizes
-        pages/page_1.png ...
+        meta.json            # request_id, source path/stat, page sizes (A/S only)
+        pages/page_1.png ...  # only the rendered A*/S* pages
 
 Processing is idempotent: a PDF is skipped on subsequent runs unless its file
 changed (mtime/size) or the render DPI differs. An existing ``annotations.json``
-is never touched.
+is never touched. PDFs rendered before the A/S filter existed are pruned in
+place on the next run (``_reconcile_meta``).
 
 Usage::
 
@@ -46,6 +53,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
+import discipline
 from logging_config import setup_logging
 
 logger = logging.getLogger("preprocess")
@@ -300,9 +308,19 @@ def _render_page_task(task: tuple[str, int, int, str]) -> tuple[str, dict]:
 
 
 def _build_meta(
-    pdf_path: Path, pdf_id: str, request_id: str, dpi: int, pages: list[dict]
+    pdf_path: Path,
+    pdf_id: str,
+    request_id: str,
+    dpi: int,
+    pages: list[dict],
+    name_map: dict[int, str | None],
 ) -> dict:
-    """Assemble and write ``meta.json`` from already-rendered page metadata."""
+    """Assemble and write ``meta.json`` from already-rendered page metadata.
+
+    ``pages`` only holds the rendered A*/S* pages, so the meta is already
+    discipline-filtered; ``pages_pruned`` marks it so ``_reconcile_meta`` never
+    re-prunes it.
+    """
     out_dir = _DATA_DIR / pdf_id
     stat = pdf_path.stat()
     meta = {
@@ -315,31 +333,71 @@ def _build_meta(
         "source_mtime": stat.st_mtime,
         "page_count": len(pages),
         "pages": pages,
+        "pages_pruned": True,
     }
-    _apply_sheet_names(meta, _sheet_name_map(pdf_path, request_id))
+    _apply_sheet_names(meta, name_map)
     (out_dir / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return meta
 
 
-def _ensure_sheet_names(pdf_path: Path, pdf_id: str, request_id: str) -> None:
-    """Backfill ``sheet_name`` into an already-rendered ``meta.json``.
+def _reconcile_meta(pdf_path: Path, pdf_id: str, request_id: str) -> None:
+    """Bring an already-rendered ``meta.json`` in line with render-time filtering.
 
-    Cheap: rewrites the JSON only (no PNG re-render) and only when sheet names
-    have not been resolved yet, so subsequent startups do nothing.
+    Two one-time, idempotent fix-ups for PDFs rendered before the A*/S* filter
+    existed (each guarded by a flag, so subsequent startups do nothing):
+
+    1. Backfill ``sheet_name`` when unresolved (``sheet_names_resolved``).
+    2. Prune non-A*/S* pages: delete their PNGs and drop them from ``meta``
+       (``pages_pruned``).
+
+    Cheap: no PNG re-render, only unlinks stale files and rewrites the JSON.
     """
-    meta_path = _DATA_DIR / pdf_id / "meta.json"
+    pdf_data_dir = _DATA_DIR / pdf_id
+    meta_path = pdf_data_dir / "meta.json"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return
-    if meta.get("sheet_names_resolved"):
-        return
-    _apply_sheet_names(meta, _sheet_name_map(pdf_path, request_id))
-    meta_path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+
+    changed = False
+    if not meta.get("sheet_names_resolved"):
+        _apply_sheet_names(meta, _sheet_name_map(pdf_path, request_id))
+        changed = True
+
+    if not meta.get("pages_pruned"):
+        pages = meta.get("pages", [])
+        kept = [p for p in pages if discipline.is_required(p.get("sheet_name"))]
+        # Guard against destructive deletion when sheet names never resolved:
+        # if nothing is kept AND no page has a name, resolution likely failed
+        # (metadata missing), so leave the pages and retry on a later run.
+        names_resolved = any(p.get("sheet_name") for p in pages)
+        if kept or names_resolved:
+            dropped = [
+                p for p in pages if not discipline.is_required(p.get("sheet_name"))
+            ]
+            pages_dir = pdf_data_dir / "pages"
+            for page in dropped:
+                image = page.get("image")
+                if image:
+                    (pages_dir / image).unlink(missing_ok=True)
+            meta["pages"] = kept
+            meta["page_count"] = len(kept)
+            meta["pages_pruned"] = True
+            changed = True
+            if dropped:
+                logger.info(
+                    "Pruned %d non-A/S page(s) from [%s] %s",
+                    len(dropped),
+                    request_id,
+                    pdf_path.name,
+                )
+
+    if changed:
+        meta_path.write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
 
 def _resolve_workers(workers: int | None) -> int:
@@ -453,7 +511,7 @@ def render_targets(
     for pdf_path, request_id in targets:
         pdf_id = data_id(request_id, pdf_path.stem)
         if not force and _is_up_to_date(pdf_path, pdf_id, dpi):
-            _ensure_sheet_names(pdf_path, pdf_id, request_id)
+            _reconcile_meta(pdf_path, pdf_id, request_id)
             logger.debug("Skipping up-to-date [%s] %s", request_id, pdf_path.name)
             skipped += 1
             continue
@@ -464,26 +522,35 @@ def render_targets(
             logger.error("Failed to open [%s] %s: %s", request_id, pdf_path.name, exc)
             failed += 1
             continue
+        # Resolve sheet names up front so only Architectural/Structural (A*/S*)
+        # pages get rasterised; the rest are never rendered (saves time + disk).
+        name_map = _sheet_name_map(pdf_path, request_id)
+        kept = [i for i in range(page_count) if discipline.is_required(name_map.get(i + 1))]
         # Create the pages dir up front so workers never mkdir concurrently.
         pages_dir = _DATA_DIR / pdf_id / "pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
         stubs[pdf_id] = {
             "request_id": request_id,
             "pdf_path": pdf_path,
-            "page_count": page_count,
-            "pages": [None] * page_count,
+            "page_count": len(kept),
+            "pages": [None] * len(kept),
+            "name_map": name_map,
             "failed": False,
         }
         logger.debug(
-            "Queued [%s] %s (%d page(s)) -> %s",
+            "Queued [%s] %s (%d of %d page(s) are A/S) -> %s",
             request_id,
             pdf_path.name,
+            len(kept),
             page_count,
             pdf_id,
         )
-        for index in range(page_count):
+        # ``index`` is the true 0-based PDF page index (so image names and
+        # page["number"] keep referring to real pages); ``slot`` is the position
+        # in the filtered ``pages`` list where the result is recorded.
+        for slot, index in enumerate(kept):
             out_path = str(pages_dir / f"page_{index + 1}.png")
-            task_meta.append(((str(pdf_path), index, dpi, out_path), pdf_id, index))
+            task_meta.append(((str(pdf_path), index, dpi, out_path), pdf_id, slot))
 
     if task_meta:
         resolved_workers = _resolve_workers(workers)
@@ -500,7 +567,14 @@ def render_targets(
         if stub["failed"] or any(page is None for page in stub["pages"]):
             failed += 1
             continue
-        _build_meta(stub["pdf_path"], pdf_id, stub["request_id"], dpi, stub["pages"])
+        _build_meta(
+            stub["pdf_path"],
+            pdf_id,
+            stub["request_id"],
+            dpi,
+            stub["pages"],
+            stub["name_map"],
+        )
         rendered += 1
         logger.info(
             "Rendered [%s] %s (%d page(s)) -> %s",
