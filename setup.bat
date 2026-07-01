@@ -26,7 +26,7 @@ REM 1. Ensure uv is available
 REM ------------------------------------------------------------
 where uv >nul 2>&1
 if errorlevel 1 (
-    echo [1/3] uv not found. Installing via winget...
+    echo [1/2] uv not found. Installing via winget...
 
     where winget >nul 2>&1
     if errorlevel 1 (
@@ -62,28 +62,16 @@ if errorlevel 1 (
         goto :fail
     )
 ) else (
-    echo [1/3] uv already installed.
+    echo [1/2] uv already installed.
 )
 
 for /f "tokens=*" %%v in ('uv --version') do echo       %%v
 
 REM ------------------------------------------------------------
-REM 2. Install the required Python (version comes from .python-version)
+REM 2. Sync dependencies from uv.lock
 REM ------------------------------------------------------------
 echo.
-echo [2/3] Installing Python toolchain via uv...
-uv python install 3.14
-if errorlevel 1 (
-    echo.
-    echo ERROR: 'uv python install' failed.
-    goto :fail
-)
-
-REM ------------------------------------------------------------
-REM 3. Sync dependencies from uv.lock
-REM ------------------------------------------------------------
-echo.
-echo [3/3] Syncing dependencies into .venv\ ...
+echo [2/2] Syncing dependencies into .venv\ ...
 uv sync
 if errorlevel 1 (
     echo.
