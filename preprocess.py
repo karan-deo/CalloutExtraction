@@ -114,24 +114,29 @@ def _request_dir(pdf_path: Path, request_id: str) -> Path | None:
     return None
 
 
-def _sheet_name_map(pdf_path: Path, request_id: str) -> dict[int, str | None]:
-    """Map 1-based page number -> sheet name for ``pdf_path``.
+def _resolve_sheet_info(
+    pdf_path: Path, request_id: str
+) -> tuple[str | None, dict[int, dict]]:
+    """Resolve source ids for ``pdf_path`` -> ``(blueprint_id, page_info)``.
 
     Best-effort: matches the PDF to a blueprint file (via ``blueprint_files.json``)
-    then reads ``worksheets_metadata.json`` for that file's sheets. The sheet
-    name is the worksheet ``name`` when present, otherwise the blueprint file's
-    ``name``. Returns ``{}`` when the metadata is missing or anything fails.
+    then reads ``worksheets_metadata.json`` for that file's sheets. Returns the
+    matched blueprint ``id`` and a map of 1-based page number ->
+    ``{"sheet_name": ..., "sheet_id": ...}``, where the sheet name is the
+    worksheet ``name`` when present (otherwise the blueprint file's ``name``) and
+    the sheet id is the worksheet ``id``. Returns ``(None, {})`` when the metadata
+    is missing or anything fails.
     """
     try:
         req_dir = _request_dir(pdf_path, request_id)
         if req_dir is None:
-            return {}
+            return None, {}
         blueprints = json.loads(
             (req_dir / "blueprint_files.json").read_text(encoding="utf-8")
         )
         files_info = blueprints.get("files_info", [])
         if not files_info:
-            return {}
+            return None, {}
 
         target_norm = _normalize(pdf_path.stem)
         matched = None
@@ -145,17 +150,17 @@ def _sheet_name_map(pdf_path: Path, request_id: str) -> dict[int, str | None]:
                     matched = info
                     break
         if matched is None:
-            return {}
+            return None, {}
 
         blueprint_id = matched.get("id")
         blueprint_name = matched.get("name") or None
 
         worksheets_path = req_dir / "worksheets_metadata.json"
         if not worksheets_path.is_file():
-            return {}
+            return blueprint_id, {}
         worksheets = json.loads(worksheets_path.read_text(encoding="utf-8"))
 
-        mapping: dict[int, str | None] = {}
+        mapping: dict[int, dict] = {}
         for sheet in worksheets:
             if sheet.get("blueprint_file_id") != blueprint_id:
                 continue
@@ -163,18 +168,24 @@ def _sheet_name_map(pdf_path: Path, request_id: str) -> dict[int, str | None]:
             if not isinstance(page_no, int):
                 continue
             name = sheet.get("name") or blueprint_name
-            mapping[page_no] = name
-        return mapping
+            mapping[page_no] = {"sheet_name": name, "sheet_id": sheet.get("id")}
+        return blueprint_id, mapping
     except (json.JSONDecodeError, OSError, KeyError, TypeError) as exc:
-        logger.debug("Sheet-name resolution failed for %s: %s", pdf_path.name, exc)
-        return {}
+        logger.debug("Sheet-info resolution failed for %s: %s", pdf_path.name, exc)
+        return None, {}
 
 
-def _apply_sheet_names(meta: dict, mapping: dict[int, str | None]) -> None:
-    """Attach ``sheet_name`` to each page and mark the meta as resolved."""
+def _apply_sheet_info(
+    meta: dict, blueprint_id: str | None, mapping: dict[int, dict]
+) -> None:
+    """Attach the blueprint id and per-page sheet ids/names, mark meta resolved."""
+    meta["blueprint_id"] = blueprint_id
     for page in meta.get("pages", []):
-        page["sheet_name"] = mapping.get(page.get("number"))
+        info = mapping.get(page.get("number")) or {}
+        page["sheet_name"] = info.get("sheet_name")
+        page["sheet_id"] = info.get("sheet_id")
     meta["sheet_names_resolved"] = True
+    meta["sheet_ids_resolved"] = True
 
 
 def derive_request_id(pdf_path: Path, input_dir: Path) -> str:
@@ -313,7 +324,8 @@ def _build_meta(
     request_id: str,
     dpi: int,
     pages: list[dict],
-    name_map: dict[int, str | None],
+    blueprint_id: str | None,
+    name_map: dict[int, dict],
 ) -> dict:
     """Assemble and write ``meta.json`` from already-rendered page metadata.
 
@@ -335,7 +347,7 @@ def _build_meta(
         "pages": pages,
         "pages_pruned": True,
     }
-    _apply_sheet_names(meta, name_map)
+    _apply_sheet_info(meta, blueprint_id, name_map)
     (out_dir / "meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -348,7 +360,8 @@ def _reconcile_meta(pdf_path: Path, pdf_id: str, request_id: str) -> None:
     Two one-time, idempotent fix-ups for PDFs rendered before the A*/S* filter
     existed (each guarded by a flag, so subsequent startups do nothing):
 
-    1. Backfill ``sheet_name`` when unresolved (``sheet_names_resolved``).
+    1. Backfill the ``blueprint_id`` plus each page's ``sheet_name``/``sheet_id``
+       when unresolved (``sheet_ids_resolved``).
     2. Prune non-A*/S* pages: delete their PNGs and drop them from ``meta``
        (``pages_pruned``).
 
@@ -362,8 +375,9 @@ def _reconcile_meta(pdf_path: Path, pdf_id: str, request_id: str) -> None:
         return
 
     changed = False
-    if not meta.get("sheet_names_resolved"):
-        _apply_sheet_names(meta, _sheet_name_map(pdf_path, request_id))
+    if not meta.get("sheet_ids_resolved"):
+        blueprint_id, mapping = _resolve_sheet_info(pdf_path, request_id)
+        _apply_sheet_info(meta, blueprint_id, mapping)
         changed = True
 
     if not meta.get("pages_pruned"):
@@ -522,10 +536,15 @@ def render_targets(
             logger.error("Failed to open [%s] %s: %s", request_id, pdf_path.name, exc)
             failed += 1
             continue
-        # Resolve sheet names up front so only Architectural/Structural (A*/S*)
-        # pages get rasterised; the rest are never rendered (saves time + disk).
-        name_map = _sheet_name_map(pdf_path, request_id)
-        kept = [i for i in range(page_count) if discipline.is_required(name_map.get(i + 1))]
+        # Resolve sheet ids/names up front so only Architectural/Structural
+        # (A*/S*) pages get rasterised; the rest are never rendered (saves
+        # time + disk).
+        blueprint_id, name_map = _resolve_sheet_info(pdf_path, request_id)
+        kept = [
+            i
+            for i in range(page_count)
+            if discipline.is_required((name_map.get(i + 1) or {}).get("sheet_name"))
+        ]
         # Create the pages dir up front so workers never mkdir concurrently.
         pages_dir = _DATA_DIR / pdf_id / "pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
@@ -534,6 +553,7 @@ def render_targets(
             "pdf_path": pdf_path,
             "page_count": len(kept),
             "pages": [None] * len(kept),
+            "blueprint_id": blueprint_id,
             "name_map": name_map,
             "failed": False,
         }
@@ -573,6 +593,7 @@ def render_targets(
             stub["request_id"],
             dpi,
             stub["pages"],
+            stub["blueprint_id"],
             stub["name_map"],
         )
         rendered += 1
