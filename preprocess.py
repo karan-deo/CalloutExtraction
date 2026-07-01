@@ -160,15 +160,45 @@ def _resolve_sheet_info(
             return blueprint_id, {}
         worksheets = json.loads(worksheets_path.read_text(encoding="utf-8"))
 
+        # Multiple worksheets can claim the same page (a "duplicate" copy of a
+        # sheet shares its page_no). Prefer the original (``is_duplicate`` falsy)
+        # deterministically rather than letting array order decide, and log any
+        # collision. ``stored_is_duplicate`` tracks the provenance of the kept
+        # record so the choice is independent of the order records arrive in.
         mapping: dict[int, dict] = {}
+        stored_is_duplicate: dict[int, bool] = {}
         for sheet in worksheets:
             if sheet.get("blueprint_file_id") != blueprint_id:
                 continue
             page_no = sheet.get("page_no")
             if not isinstance(page_no, int):
                 continue
-            name = sheet.get("name") or blueprint_name
-            mapping[page_no] = {"sheet_name": name, "sheet_id": sheet.get("id")}
+            is_duplicate = bool(sheet.get("is_duplicate"))
+            entry = {
+                "sheet_name": sheet.get("name") or blueprint_name,
+                "sheet_id": sheet.get("id"),
+            }
+            if page_no not in mapping:
+                mapping[page_no] = entry
+                stored_is_duplicate[page_no] = is_duplicate
+                continue
+            # Collision: keep the original; a stored duplicate is only displaced
+            # by an incoming original.
+            if stored_is_duplicate[page_no] and not is_duplicate:
+                ignored_id = mapping[page_no]["sheet_id"]
+                mapping[page_no] = entry
+                stored_is_duplicate[page_no] = False
+                kept_id = sheet.get("id")
+            else:
+                kept_id = mapping[page_no]["sheet_id"]
+                ignored_id = sheet.get("id")
+            logger.warning(
+                "Worksheet page collision [blueprint %s] page %d: kept %s, ignored %s",
+                blueprint_id,
+                page_no,
+                kept_id,
+                ignored_id,
+            )
         return blueprint_id, mapping
     except (json.JSONDecodeError, OSError, KeyError, TypeError) as exc:
         logger.debug("Sheet-info resolution failed for %s: %s", pdf_path.name, exc)
