@@ -10,7 +10,7 @@ wheels/
 .venv
 
 
-data
+output_data
 requests
 
 # Logs

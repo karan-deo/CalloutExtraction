@@ -3,12 +3,12 @@
 
 Self-contained: serves the static frontend, the page images, and read/write
 endpoints for each PDF's ``annotations.json``. On startup it auto-preprocesses
-any PDFs dropped into ``CalloutExtraction/pdfs/`` (skipping unchanged ones).
+any PDFs dropped into ``CalloutExtraction/input_data/`` (skipping unchanged ones).
 
 Run::
 
     pip install -r CalloutExtraction/requirements.txt
-    # drop PDFs into CalloutExtraction/pdfs/ (e.g. requests/<id>/pdfs/*.pdf)
+    # drop PDFs into CalloutExtraction/input_data/ (e.g. requests/<id>/pdfs/*.pdf)
     python CalloutExtraction/app.py        # open http://127.0.0.1:5000
 """
 
@@ -28,9 +28,9 @@ from logging_config import setup_logging
 logger = logging.getLogger("app")
 
 _ROOT = Path(__file__).resolve().parent
-_DATA_DIR = _ROOT / "data"
+_DATA_DIR = _ROOT / "output_data"
 _STATIC_DIR = _ROOT / "static"
-_INPUT_DIR = _ROOT / "pdfs"
+_INPUT_DIR = _ROOT / "input_data"
 
 app = Flask(__name__, static_folder=None)
 

@@ -68,8 +68,8 @@ logger = logging.getLogger("preprocess")
 fitz.TOOLS.mupdf_display_errors(False)
 
 _ROOT = Path(__file__).resolve().parent
-_DATA_DIR = _ROOT / "data"
-_INPUT_DIR = _ROOT / "pdfs"
+_DATA_DIR = _ROOT / "output_data"
+_INPUT_DIR = _ROOT / "input_data"
 
 ROOT_REQUEST = "_root"
 
