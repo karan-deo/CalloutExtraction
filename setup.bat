@@ -79,6 +79,11 @@ if errorlevel 1 (
     goto :fail
 )
 
+REM ------------------------------------------------------------
+REM 3. Ensure runtime directories exist
+REM ------------------------------------------------------------
+if not exist "pdfs\requests" mkdir "pdfs\requests"
+
 echo.
 echo === Setup complete ===
 echo Run the app with:
